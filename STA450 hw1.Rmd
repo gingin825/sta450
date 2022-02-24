@@ -1,0 +1,736 @@
+---
+title: "STA450 Assignment 1"
+author: "Yu-Chun Chien"
+output: pdf_document
+---
+
+```{r, include = F, message = F, warning = F}
+library(utils)
+#install.packages("deSolve")
+library(deSolve)
+library(dplyr)
+library(kableExtra)
+```
+
+```{r, include = F, message = F, warning = F}
+# import data
+#data_ecdc <- read.csv(
+#"https://opendata.ecdc.europa.eu/covid19/nationalcasedeath_eueea_daily_ei/csv", na.strings = "", fileEncoding = "UTF-8-BOM")
+data_owid <- read.csv(
+"https://covid.ourworldindata.org/data/owid-covid-data.csv",
+na.strings = "", fileEncoding = "UTF-8-BOM")
+data_uk <- read.csv(paste0("https://api.coronavirus.data.gov.uk/v2/",
+"data?areaType=overview&metric=newCasesByPublishDate&format=csv"),
+na.strings="", fileEncoding = "UTF-8-BOM")
+data_india <-read.csv("https://prsindia.org/covid-19/cases/download")
+data_london <-read.csv(paste0(
+"https://data.london.gov.uk/download/coronavirus--covid-19--cases/",
+"d15e692d-5e58-4b6e-80f2-78df6f8b148b/phe_cases_age_london.csv"))
+data_ny <- read.csv(
+"https://raw.githubusercontent.com/nychealth/coronavirus-data/master/trends/cases-by-day.csv",
+na.strings = "", fileEncoding = "UTF-8-BOM")
+```
+
+# Question 1.
+
+## Introduction
+
+As COVID-19 varies, the symptoms, transmission rate, and the recover rate differs. Observing COVID-19 data to date, many scientists hypothesized that the successive waves of COVID-19 are becoming narrower. It is also observed that the symptoms are becoming less severe, and the hospitalization rate are decreasing.   
+
+This section of the assignment aims to go through the data from Maharashtra state, New York, Belgium, and London and address the hypothesis that the successive waves of COVID-19 are becoming narrower. The concept of "narrower" will be conceptualized and assessed scientifically.
+
+## Method & Result
+
+To address the question whether the waves are becoming narrower, the SIR model is utilized here to assess the waves in different cities. In SIR model, there are two parameters, $\beta$ and $\gamma$, which represents the transmission rate and the recovery rate respectively. Dividing $\beta$ by $\gamma$, we get $R_0$, which is the basic reproduction number. Under the SIR model, if $R_0 >1$, the pandemic will take off, and if it $<1$, the pandemic will die out. Also, the larger $R_0$ is, the "narrower" a wave is. Thus, in the following analysis, $R_0$ of different waves in the cities mentioned above will be calculated and compared. If $R_0$ is becoming bigger, then the hypothesis that the successive waves are narrower is correct. If it is not, then it might be that it is narrower only in some areas.  
+
+For the analysis, we set $S=0.5$, $I = 0.001$, and $R = 1-S-I$ for all cities and waves.
+
+
+```{r, echo = F, warning = F,message=FALSE, include = F}
+# data cleaning maha
+data_india.maha <-data_india[data_india$Region == "Maharashtra",]
+data_india.maha$time= as.Date(as.character(data_india.maha$Date), format = '%d/%m/%Y')
+data_india.maha = data_india.maha[data_india.maha$time > as.Date('2020/1/1'), ]
+data_india.maha$cases = c(NA, diff(data_india.maha$Confirmed.Cases))
+
+# removing outliers
+goodData = which( (data_india.maha$cases < 150000) & (data_india.maha$cases > 0) )
+data_india.maha = data_india.maha[goodData, ]
+#plot(data_india.maha$time, data_india.maha$cases)
+
+```
+
+```{r, echo = F, warning = F,message = F, include = F}
+# NY data cleaning
+
+data_ny$time= as.Date(as.character(data_ny$date_of_interest), format = '%m/%d/%Y')
+
+
+# removing outliers
+goodData = which( (data_ny$CASE_COUNT < 20000) & (data_ny$CASE_COUNT > 0) )
+data_ny = data_ny[goodData, ]
+data_ny <- data_ny %>% 
+  rename(
+    cases = CASE_COUNT,
+    date = date_of_interest
+    )
+#plot(data_ny$time, data_ny$CASE_COUNT)
+```
+
+```{r, echo = F, warning = F,include = F, message=FALSE}
+# data for belgium cleaning
+
+data_owid.bel <-data_owid[data_owid$location == "Belgium",]
+
+
+data_owid.bel$time= as.Date(as.character(data_owid.bel$date), format = '%Y-%m-%d')
+
+
+
+# removing outliers
+goodData = which( (data_owid.bel$new_cases < 60000) & (data_owid.bel$new_cases > 0) )
+data_owid.bel = data_owid.bel[goodData, ]
+#plot(data_owid.bel$time, data_owid.bel$new_cases)
+data_owid.bel <- data_owid.bel %>% 
+  rename(
+    cases = new_cases,
+    )
+```
+
+```{r, echo = F, message = F, include = F,warning = F}
+# data for london cleaning
+
+data_london$time= as.Date(as.character(data_london$date), format = '%Y-%m-%d')
+# removing outliers
+goodData = which( (data_london$cases < 60000) & (data_london$cases > 0) )
+data_london = data_london[goodData, ]
+data_london <- data_london %>% 
+  group_by(time) %>% 
+  summarise(cases = sum(cases))
+#plot(data_london$time, data_london$cases)
+```
+
+```{r, echo = F, message = F, include = F,warning = F}
+# SIR Function
+SIR = function(time, state, parameters) {
+  with(as.list(c(state, parameters)), {
+    dS= (-beta*S*I)
+    dI= (beta*S*I)-(gamma*I)
+    dR= gamma*I
+    return(list(c(dS, dI, dR)))})
+}
+
+# mySIR
+mySir = function(parameters, Stime) {
+init = parameters[c('S','I')]
+init = c(init, c(R = 1-sum(init)))
+out = as.data.frame(deSolve::ode(y = init, times = as.integer(Stime),
+func = SIR, parms = parameters[c('beta','gamma')]))
+out$P = out$I + out$R
+cbind(time = Stime, out[,-1], Y = c(diff(out$P), NA))
+}
+
+# forOPT
+
+forOpt = function(x, par, Stime) sum((
+  mySir(par, Stime)[,'Y'] - x[match(Stime, x$time), 'casesProp']
+  )^2, na.rm=TRUE)
+```
+
+```{r, echo = F, message = F, include = F,warning = F}
+# best param finder
+best_params_finder <- function(pop, df, startDate, endDate, S, I, by) {
+  # TIMESEQ
+  timeSeq <- seq(as.Date(startDate), as.Date(endDate), by=1)
+  
+  x = df
+  x$casesProp = x$cases / pop
+  # filted X by dates
+  # x[x$time %in% timeSeq,]
+  # Find best beta and gamma
+  betas <- seq(0, 5, by=1/by)
+  gammas <- seq(0.05, 2, by=1/by)
+  best_error = 10000
+  best_beta = 0.25
+  best_gamma = 0.1
+  best_s = 0
+  best_i = 0
+  
+  for (beta in betas)
+  {
+    for(gamma in gammas) {
+      
+      someParams = c(S = S, I=I, beta = beta, gamma = gamma)
+      
+      forOpt(x, someParams, timeSeq)
+      
+      
+      resDelta = optim(someParams, forOpt,
+      lower = c(0,0,0,0), upper= c(0.9, 0.1,10,1),
+      control = list(parscale = c(1, 0.001, 1, 0.1)), Stime = timeSeq, x=x)
+      outDelta = mySir(resDelta$par, timeSeq)
+      resDelta[c('par','value','counts')]
+      
+      current_error <- resDelta$value
+
+      if(current_error < best_error) {
+        best_error = current_error
+        best_beta = as.numeric(resDelta$par['beta'])
+        best_gamma = as.numeric(resDelta$par['gamma'])
+        best_s = as.numeric(resDelta$par['S'])
+        best_i = as.numeric(resDelta$par['I'])
+      }
+    }
+  }
+  #print(best_error)
+  #print(best_s)
+  #print(best_i)
+  #print(best_beta)
+  #print(best_gamma)
+  
+  # Plot
+  someParams = c(S = best_s, I=best_i, beta = best_beta, gamma = best_gamma)
+  out = mySir(someParams, seq(as.Date(startDate), as.Date(endDate), by=1))
+  plot(out[,c('time','Y')], lwd=2,
+  type='l', xlab='', xaxs='i',
+  ylab='Incidence', ylim=c(0, max(x$casesProp)))
+  points(x$time, x$casesProp)
+  
+  
+}
+```
+
+## Maharashtra State, India
+
+```{r, echo = F, warning = F,fig.cap = "Cases in Mahasthra state",fig.width=6, fig.height=4}
+# maha
+plot(data_india.maha$time, data_india.maha$cases)
+```
+
+For Maharashtra state, observing the plot, it seemed that the successive wave is becoming narrower. According to the plot, the first wave occurred from 2020/08/15 to 2020/11/15, the second (Delta) wave occurred from 2021/03/15 to 2021/06/15, and the third (Omicron) wave occurred from 2021/12/30 to 2022/02/06. SIR model is fitted and the $\beta$, $\gamma$, and $R_0$ is showed in the table below. 
+
+### Real data vs. Fitted SIR Model
+
+The real data (points) and the fitted SIR model (line) is plotted below for the three waves. The model is fitted by minimizing the mean squared error. As you can see from the plot, the model fits well for the first and second wave, while it does not fit well in the third wave, which might be because that the data size of it is smaller. 
+
+```{r, warning = F, echo = F, warning = F}
+# India wave one
+pop = 123144223
+startDate = "2020-08-15"
+endDate = "2020-11-15"
+by = 2
+S=0.5
+I=0.001
+best_params_finder(pop, data_india.maha, startDate, endDate, S, I, by) 
+
+# delta
+startDate = "2021-03-15"
+endDate = "2021-06-15"
+best_params_finder(pop, data_india.maha, startDate, endDate, S, I, by) 
+
+#omicron
+startDate = "2021-12-30"
+endDate = "2022-02-06"
+best_params_finder(pop, data_india.maha, startDate, endDate, S, I, by) 
+```
+
+### $\beta$, $\gamma$ $\&$ $R_0$ of the Three Waves
+
+By comparing the $R_0$ value of each wave, since the $R_0$ value is not increasing, it means that under the deterministic SIR model, our wave is not becoming narrower. However, this is contrary to the plot, as we could observe that the waves are becoming narrower. Thus, it might be that the SIR model is not suitable for modeling COVID-19, or simply minimizing the mean square error for observed vs. fitted data does not gives us the best parameter. In particular, it is commonly believed that the transmission rate is becomming higher while the transmission rate is lower.
+
+```{r, warning = F, echo = F, warning = F}
+wave <- c("First Wave", "Second Wave", "Third Wave")
+beta <- c(4.98, 3.44, 1.46)
+gamma <- c(0.05, 0.99, 0.5)
+R_0 <- beta/gamma
+
+df <- data.frame(wave, beta, gamma, R_0)
+
+df %>%
+  kbl() %>%
+  kable_styling()
+# 7.936948e-08
+# 0.1412208
+# 0.0002640268
+# 3.472345
+# 0.4800931
+# 3.105942e-07
+# 0.3027801
+# 0.0001612776
+# 3.441975
+# 0.9910306
+# 4.084266e-07
+# 0.5027599
+# 0.0004276179
+# 0.9928846
+# 0.4877316
+```
+
+
+
+## New York, United States
+
+```{r, echo = F, warning = F,fig.cap = "Cases in New York",fig.width=6, fig.height=4}
+# NY
+plot(data_ny$time, data_ny$CASE_COUNT)
+```
+
+For New York, observing the plot, it seemed that the successive wave is not becoming narrower. The second (Delta) wave is the widest, while the third (Omicron) wave is the narrowest. According to the plot, the first wave occurred from 2020/03/15 to 2020/15/15, the second (Delta) wave occurred from 2020/11/27 to 2021/04/06, and the third (Omicron) wave occurred from 2021/12/05 to 2022/02/10. SIR model is fitted and the $\beta$, $\gamma$, and $R_0$ is showed in the table below. 
+
+### Real data vs. Fitted SIR Model
+
+The real data (points) and the fitted SIR model (line) is plotted below for the three waves. The model is fitted by minimizing the mean squared error. As you can see from the plot, the model fits well for all three waves. 
+
+
+```{r, warning = False, echo = F, warning = F}
+pop = 8804190
+
+startDate = "2020-03-15"
+endDate = "2020-05-15"
+by = 2
+S=0.5
+I=0.001
+best_params_finder(pop, data_ny, startDate, endDate, S, I, by) 
+
+# delta
+startDate = "2020-11-27"
+endDate = "2021-04-06"
+best_params_finder(pop, data_ny, startDate, endDate, S, I, by) 
+
+#omicron
+startDate = "2021-12-05"
+endDate = "2022-02-10"
+best_params_finder(pop, data_ny, startDate, endDate, S, I, by) 
+```
+
+
+## $\beta$, $\gamma$ $\&$ $R_0$ 
+
+By comparing the $R_0$ value of each wave, the second wave has the smallest value while the first wave have the largest. However, the result does not correspond to the plot. To match our predicted results observed from the plot, the third wave should have the highest $R_0$ value. Thus, it might be that the SIR model is not suitable for modeling COVID-19, or simply minimizing the mean square error for observed vs. fitted data does not gives us the best parameter. In particular, it is commonly believed that the transmission rate is becoming higher while the transmission rate is lower.
+
+```{r, warning = F, echo = F, warning = F}
+wave <- c("First Wave", "Second Wave", "Third Wave")
+beta <- c(4.95, 0.86, 2.92)
+gamma <- c(0.99, 0.54, 0.99)
+R_0 <- beta/gamma
+
+df <- data.frame(wave, beta, gamma, R_0)
+
+df %>%
+  kbl() %>%
+  kable_styling()
+# 5.027508e-07
+# 0.2097936
+# 0.0003266675
+# 4.9551
+# 0.9930326
+# 1.735273e-06
+# 0.5423135
+# 0.001610712
+# 0.3926511
+# 0.2038142
+# 4.390172e-06
+# 0.3708936
+# 0.0003086806
+# 2.948495
+# 0.9906163
+```
+
+  
+
+## Belgium
+
+```{r, echo = F, warning = F,fig.cap = "Cases in Belgium",fig.width=6, fig.height=4}
+# bel
+plot(data_owid.bel$time, data_owid.bel$cases)
+```
+
+For Belgium, observing the plot, it seemed that the successive wave is becoming narrower. Also, there seemed to be only two waves instead of three. According to the plot, the first wave occurred from 2020/10/15 to 2020/12/15, and the second (Omicron) wave occurred from 2021/10/15 to 2022/02/01. SIR model is fitted and the $\beta$, $\gamma$, and $R_0$ is showed in the table below. 
+
+### Real data vs. Fitted SIR Model
+
+The real data (points) and the fitted SIR model (line) is plotted below for the three waves. The model is fitted by minimizing the mean squared error. As you can see from the plot, the model fits well for both the first and the second wave. 
+
+
+## $\beta$, $\gamma$ $\&$ $R_0$ 
+
+By comparing the $R_0$ value of each wave, the value of $R_0$ for the second wave is smaller than the first wave, which implies that the first way is narrower. This is a contradiction to the plot.  It might be that the SIR model is not suitable for modeling COVID-19, or simply minimizing the mean square error for observed vs. fitted data does not gives us the best parameter. In particular, it is commonly believed that the transmission rate is becoming higher while the transmission rate is lower. 
+
+```{r, warning = F, echo = F, warning = F}
+pop = 11521238
+
+startDate = "2020-10-15"
+endDate = "2020-12-15"
+by = 2
+S=0.5
+I=0.001
+best_params_finder(pop, data_owid.bel, startDate, endDate, S, I, by) 
+
+# wave2
+startDate = "2021-10-15"
+endDate = "2022-02-01"
+best_params_finder(pop, data_owid.bel, startDate, endDate, S, I, by) 
+
+ 
+```
+
+```{r, warning = F, echo = F, warning = F}
+
+wave <- c("First Wave", "Second Wave")
+beta <- c(5.12, 0.03)
+gamma <- c(0.06, 0.004) # gamma for wave 2
+R_0 <- beta/gamma
+
+df <- data.frame(wave, beta, gamma, R_0)
+
+df %>%
+  kbl() %>%
+  kable_styling()
+
+# 3.310775e-06
+#0.03666758
+# 0.002531005
+#6.53431
+# 0.08965247
+#6.430856e-05
+#0.9
+# 0.04144565
+# 0.01945798
+# 0
+```
+
+ 
+
+## London, UK
+
+```{r, echo = F, warning = F,fig.cap = "Cases in London",fig.width=6, fig.height=4}
+# london
+plot(data_london$time, data_london$cases)
+```
+
+For London, observing the plot, the successive waves do not seem to vary a lot, although the height is different. According to the plot, the first wave occurred from 2020/10/15 to 2020/02/15, the second (delta) wave occurred from 2021/06/15 to 2021/10/15, and the third wave occured from 2021/12/08 to 2022/02/08. SIR model is fitted and the $\beta$, $\gamma$, and $R_0$ is showed in the table below. 
+
+### Real data vs. Fitted SIR Model
+
+The real data (points) and the fitted SIR model (line) is plotted below for the three waves. The model is fitted by minimizing the mean squared error. As you can see from the plot, the model fits well for all three waves. 
+
+
+```{r, warning = F, echo = F, warning = F}
+pop = 8961989
+
+startDate = "2020-10-15"
+endDate = "2021-02-15"
+by = 2
+S=0.5
+I=0.001
+best_params_finder(pop, data_london, startDate, endDate, S, I, by) 
+
+# delta
+startDate = "2021-06-15"
+endDate = "2021-10-15"
+best_params_finder(pop, data_london, startDate, endDate, S, I, by) 
+
+#omicron
+startDate = "2021-12-08"
+endDate = "2022-02-08"
+best_params_finder(pop, data_london, startDate, endDate, S, I, by) 
+```
+
+
+## $\beta$, $\gamma$ $\&$ $R_0$ 
+
+By comparing the $R_0$ value of each wave, the value of $R_0$ for the first wave is way bigger than the second and third wave, while according to our plot it is not true since the shape of the three waves in London are approximately the same except for the height. It might be that the SIR model is not suitable for modeling COVID-19, or simply minimizing the mean square error for observed vs. fitted data does not gives us the best parameter. In particular, it is commonly believed that the transmission rate is becoming higher while the transmission rate is lower.
+
+```{r, warning = F, echo = F, warning = F}
+wave <- c("First Wave", "Second Wave", "Third Wave")
+beta <- c(1.41, 0.90, 1.00)
+gamma <- c(0.01, 0.53, 0.36)
+R_0 <- beta/gamma
+
+df <- data.frame(wave, beta, gamma, R_0)
+
+df %>%
+  kbl() %>%
+  kable_styling()
+# 5.354123e-06
+# 0.06462275
+# 5.35175e-05
+# 1.408649
+# 0
+# 1.474208e-06
+# 0.5860246
+# 0.0005156801
+# 0.8661965
+# 0.4894185
+# 2.286694e-05
+# 0.148858
+# 0.01391987
+# 0.8618711
+# 0.06205796
+```
+
+
+
+
+## Conclusion
+
+By fitting the SIR Model and comparing $R_0$ across different waves, it could be observed that the value is not consistently becoming larger, and some $\beta$ and $\gamma$ is not making sense when comparing to our common findings that the variant are becoming more infectious but have a faster recovery rate. Thus, the hypothesis that the successive waves are narrowing is not correct if we apply the SIR model and fit the model to the data by minimizing the mean squared error. However, it might be that globally, it is narrowing, or we should apply another model and use another optimization method.  
+
+# Question 2
+
+## Introduction
+
+When people got COVID-19, it often takes time for them to go take the test and be notified of the infection. It is hypothesized that this kind of reporting delays make SIR models harder to identify. If it takes time from infection and notification of the infection, a SINR model is used to model the disease, where N stands for notification. 
+
+To understand how reporting delays affect the SIR modeling, this section aims to simulate a stochastic epidemic with 100 individuals using the parameters $\beta = 3.441975$ and $\gamma = 0.9910306$ estimated from the Delta wave in Maharashtra in Question 1. Three scenarios are presented, one with no reporting delay, one with 2 days of delay on average, and one with 5 days of delay on average. If the hypothesis is true, it is predicted that the longer the reporting delay is, the "wider" the posterior distribution of the parameters will be. Namely, the posterior distribution of the parameter of the 5 day delay scenario will be widest, with larger variance.    
+
+## Methods & Results
+
+To simulate a stochastic epidemic, Markov chain Monte Carlo (MCMC) is used. In the no delay scenario, 8000 iterations are run with each having 1 chains. In the 2 days and 5 days delay scenario, 500 iterations are run with each having 1 chains. In this section, three scenario will be discussed separately.
+
+
+```{r, include = F, message = F, echo = F}
+#install.packages("EpiILMCT")
+library("EpiILMCT")
+```
+
+### No Delay
+
+For the no delay condition, using a $\gamma(1, 0.99)$ prior for infectious periods, a $\gamma(20, \frac{20}{3.441975})$ prior on beta, and using 0.001 for the proposal variance for the MCMC update, 5000 simulations were simulated. Here, the shape parameter for the infectious period were chosen to be 1 since we assume that the distribution between two events follows a exponential distribution, and the rate parameter is 0.99, which is the recover rate. The prior on beta is chosen to be not too narrow to let our data to have more influence on the posterior.
+
+```{r, echo = F, include = F, message = F}
+
+num_individuals <- 100
+estimated_gamma <- 0.9910306
+estimated_beta <- 3.441975
+
+net <- contactnet(type = 'random', num.id = num_individuals, beta = 1)
+
+set.seed(500)
+epi <- datagen(type = 'SIR', kerneltype = 'network',
+kernelmatrix = net, suspar = 3.4,  # suspar: susceptibility function, or transmission rate?
+delta = c(1, estimated_gamma))
+# transmission rate (beta) is 3.44
+# infectious periods follow a gamma (1,1) distribution (prior)
+
+#plot(epi, plottype = "history")
+```
+
+#### MCMC Trace Plot
+
+```{r, echo = F,fig.width=5, fig.height=3}
+# delete
+susccov = list(NULL)
+susccov[[1]] = list(estimated_beta, c("gamma", 1, 1/estimated_beta, 0.001) )
+susccov[[2]] = rep(1,100)
+
+set.seed(900)
+mcmc1 <- epictmcmc(object = epi, datatype = "known epidemic",
+nsim = 8000, control.sus = susccov)
+plot(mcmc1, plottype = "parameter", start = 1, thin = 10,
+density = FALSE, ylab="transmission rate",
+main="MCMC Trace Plot")
+```
+
+#### Posterior of Transmission Rate 
+
+```{r, echo = F,fig.width=5, fig.height=3}
+plot(density(mcmc1$parameter.samples[1000:8000]),
+main = "Transmission Rate (Beta) Posterior",
+xlab="Beta")
+```
+
+Here, due to the sample size and a lower iterations simulated, our transmission rate did not converge strongly. However, in general, it tends to converge to around 3.55.
+
+```{r, echo = F}
+summary(window(mcmc1$parameter.samples, start = 1000, thin = 10))
+```
+For the posterior of the parameter, the mean is centered at $3.519$, with the standard deviation being $0.037$ and its $95%$ confidence interval being $(3.424, 3.566)$. Also, our acceptance rate is higher than 60% here. 
+
+
+```{r, echo = F, message = F, include = F}
+
+# acceptance rate, should be 60%
+mcmc1$acceptance.rate
+```
+
+
+### 2 Days Delay
+
+For 2 days delay period condition, the incubation rate is $0.5$ $(\frac{1}{days})$. The prior distribution of incubation periods is set to be $\gamma(1, 0.5)$, which is $\exp{\gamma^{inc}}$. The prior of delay period is set to be $\gamma(1, 0.5)$, which is $\exp{\gamma^{del}}$. Further, we force spark parameter to be low, so we set the initial value low and give it a narrow prior. 
+
+```{r, echo = F, include = F, echo = F}
+num_individuals <- 100
+estimated_gamma <- 0.9910306
+estimated_beta <- 3.441975
+incubation_rate <- 0.5 # Note that the day - 1/rate
+
+#Generate epidemic
+
+
+
+net <- contactnet(type = 'random', num.id = num_individuals, beta = 1)
+
+epi <- datagen(type = 'SINR', kerneltype = 'network',
+kernelmatrix = net, suspar = 3.441975,
+
+# CHANGED
+delta = matrix(c(1, 1, incubation_rate, estimated_gamma - incubation_rate),2,2))
+#incubation PERIODS (not rate) ~ gamma(1, 0.25)
+#delay PERIODS (not rate) ~ gamma(1, 0.25)
+#transmission rate (beta) is 0.005
+#plot(epi, plottype = "history")
+```
+
+
+```{r, echo = F, include = F, echo = F}
+# MCMC
+
+susccov = list(NULL)
+susccov[[1]] = list(estimated_beta, c("gamma", 1, 1/estimated_beta, 0.001) )
+susccov[[2]] = rep(1,100)
+
+
+spark <- list(0.00001, c("gamma", 1, 100000, 0.00001 ))
+#prior -- sparks forced to be low (as we don’t really want it)
+
+
+
+# Make shape = 1, gamma becomes exp
+delta1 <- list(NULL)
+delta1[[1]] <- c(1,1)
+#fixes shape parameter of gamma which incubation
+# and delay periods are assumed to follow
+# (i.e. we are assuming exponential)
+
+
+
+# CHANGED
+delta1[[2]] <- matrix(c(incubation_rate, estimated_gamma - incubation_rate), ncol = 1, nrow = 2)
+#inital values of incubation and delay distribution rate parameters
+# changed 1 to 4 (ncol)
+
+delta1[[3]] <- matrix(c(1,incubation_rate,1,estimated_gamma - incubation_rate), ncol = 2, nrow = 2)
+# prior -- gamma(1,2) on incubation period rate
+# prior -- gamma(2,4) on delay period rate
+
+
+
+mcmc2 <- epictmcmc(object = epi, datatype = "unknown removal",
+nsim = 500, nchains = 1, control.sus = susccov,
+delta = delta1, spark.par = spark)
+
+```
+
+```{r, echo = F, include = F, message = F}
+# acceptance rate, should be 60%
+mcmc2$acceptance.rate
+```
+
+```{r, echo = F,fig.width=5, fig.height=3}
+plot(density(mcmc2$parameter.samples[100:500]),
+main = "Transmission Rate (Beta) Posterior",
+xlab="Beta")
+
+
+```
+
+```{r, echo = F}
+summary(window(mcmc2$parameter.samples, start = 100, thin = 100))
+```
+
+For the posterior of the parameter, the mean is centered at $3.442$, with the standard deviation being $0.009$ and its $95%$ confidence interval being $(3.43, 3.45)$. Also, our acceptance rate is higher than 60% here. 
+
+### 5 Days Delay
+
+For 5 days delay period condition, the incubation rate is $0.2$ $(\frac{1}{days})$. The prior distribution of incubation periods is set to be $\gamma(1, 0.2)$, which is $\exp{\gamma^{inc}}$. The prior of delay period is set to be $\gamma(1, 0.8)$, which is $\exp{\gamma^{del}}$. Further, we force spark parameter to be low, so we set the initial value low and give it a narrow prior. 
+
+```{r, echo = F, include = F, warning=FALSE, message = F}
+num_individuals <- 100
+estimated_gamma <- 0.9910306
+estimated_beta <- 3.441975
+incubation_rate <- 0.2 # Note that the day - 1/rate
+
+#Generate epidemic
+
+# CHANGED: num_individuals.
+
+net <- contactnet(type = 'random', num.id = num_individuals, beta = 1)
+
+epi <- datagen(type = 'SINR', kerneltype = 'network',
+kernelmatrix = net, suspar = 3.441975,
+
+# CHANGED
+delta = matrix(c(1, 1, incubation_rate, estimated_gamma - incubation_rate),2,2))
+#incubation PERIODS (not rate) ~ gamma(1, 0.25)
+#delay PERIODS (not rate) ~ gamma(1, 0.25)
+#transmission rate (beta) is 0.005
+#plot(epi, plottype = "history")
+```
+
+```{r, echo = F, include = F, warning=FALSE, message = F}
+# MCMC
+
+susccov = list(NULL)
+susccov[[1]] = list(estimated_beta, c("gamma", 1, 1/estimated_beta, 0.005) )
+susccov[[2]] = rep(1,100)
+
+
+spark <- list(0.00001, c("gamma", 1, 100000, 0.00001 ))
+#prior -- sparks forced to be low (as we don’t really want it)
+
+
+
+# Make shape = 1, gamma becomes exp
+delta1 <- list(NULL)
+delta1[[1]] <- c(1,1)
+#fixes shape parameter of gamma which incubation
+# and delay periods are assumed to follow
+# (i.e. we are assuming exponential)
+
+
+
+# CHANGED
+delta1[[2]] <- matrix(c(incubation_rate, estimated_gamma - incubation_rate), ncol = 1, nrow = 2)
+#inital values of incubation and delay distribution rate parameters
+# changed 1 to 4 (ncol)
+
+delta1[[3]] <- matrix(c(1,incubation_rate,5,estimated_gamma - incubation_rate), ncol = 2, nrow = 2)
+# prior -- gamma(1,5) on incubation period rate
+# prior -- gamma(2,10) on delay period rate
+
+
+
+mcmc3 <- epictmcmc(object = epi, datatype = "unknown removal",
+nsim = 500, nchains = 1, control.sus = susccov,
+delta = delta1, spark.par = spark)
+
+```
+
+```{r, echo = F, include = F, message = F}
+# acceptance rate, should be 60%
+mcmc3$acceptance.rate
+```
+
+```{r, echo = F,fig.width=5, fig.height=3}
+plot(density(mcmc3$parameter.samples[100:500]),
+main = "Transmission Rate (Beta) Posterior",
+xlab="Beta")
+
+
+```
+
+```{r, echo = F}
+summary(window(mcmc3$parameter.samples, start = 100, thin = 100))
+```
+For the posterior of the parameter, the mean is centered at $3.358$, with the standard deviation being $0.098$ and its $95%$ confidence interval being $(3.22, 3.45)$. Also, our acceptance rate is higher than 60% here. 
+
+## Discussion, Interpretation, & Limitations
+
+As you can see from the results and plots, the longer the delay period is, the wider the posterior distributions are. This means that the longer the delay period is, the more uncertain we are for the true value and distribution of the parameters. In the case of COVID-19, in the middle of a wave, we might expect a longer reporting time since many tests needs to be done or there might not be enough testing kits, making it harder to model the disease using SIR model since we might not be too certain about the parameter 
+
+Furthermore, MCMC in general takes longer time to run, especially when we have incubation and the delay period. Thus, only 100 individuals were used for sample size. In addition, for 2 days and 5 days delay, only 500 iterations were simulated. For no delay scenario, the run time is shorter, so 5000 iterations were simulated. This might be a potential limitation. To make MCMC simulations work better or to better estimate the parameters, more iterations should be run and a larger sample size should be used by using a computer that has better computing capacity. 
+
+
+
+
